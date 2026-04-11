@@ -10,3 +10,15 @@ app/build/
 backend/.venv/
 backend/__pycache__/
 backend/*.log
+
+# Python cache and runtime artifacts
+backend/app/__pycache__/
+backend/app/auth/__pycache__/
+*.pyc
+
+# Local database
+backend/app/*.db
+
+# JVM crash/replay logs
+hs_err_pid*.log
+replay_pid*.log
