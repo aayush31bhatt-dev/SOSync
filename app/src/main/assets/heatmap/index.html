@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Safety Heatmap</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+    <style>
+        html, body {
+            margin: 0;
+            height: 100%;
+            background: #eef2f4;
+            font-family: Arial, sans-serif;
+        }
+        #map-shell {
+            position: relative;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+            border-radius: 18px;
+        }
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+        #status {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            z-index: 1000;
+            padding: 8px 10px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.95);
+            color: #1f2a30;
+            font-size: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+        }
+    </style>
+</head>
+<body>
+    <div id="map-shell">
+        <div id="status">Loading safety map...</div>
+        <div id="map"></div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const apiBase = params.get("apiBase") || "http://10.0.2.2:8000";
+        const statusElement = document.getElementById("status");
+
+        const map = L.map("map", {
+            preferCanvas: true,
+            zoomControl: true,
+            attributionControl: true,
+        }).setView([22.9734, 78.6569], 5);
+
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            maxZoom: 18,
+            attribution: "&copy; OpenStreetMap contributors"
+        }).addTo(map);
+
+        Promise.all([
+            fetch(apiBase + "/api/heatmap/grid?rows=120&cols=120").then((response) => {
+                if (!response.ok) {
+                    throw new Error("Grid request failed");
+                }
+                return response.json();
+            }),
+            fetch(apiBase + "/api/heatmap/summary").then((response) => {
+                if (!response.ok) {
+                    throw new Error("Summary request failed");
+                }
+                return response.json();
+            })
+        ])
+            .then(([gridPayload, summaryPayload]) => {
+                const points = Array.isArray(gridPayload.points)
+                    ? gridPayload.points.map((item) => [item[0], item[1], item[2]])
+                    : [];
+
+                if (!points.length) {
+                    statusElement.textContent = "No heatmap cells available";
+                    return;
+                }
+
+                L.heatLayer(points, {
+                    radius: 22,
+                    blur: 18,
+                    maxZoom: 10,
+                    minOpacity: 0.18,
+                    gradient: {
+                        0.25: "#2d8fdd",
+                        0.45: "#4cc96c",
+                        0.7: "#f4c542",
+                        1.0: "#e8513c"
+                    }
+                }).addTo(map);
+
+                const bounds = summaryPayload.bounds;
+                map.fitBounds([
+                    [bounds.min_latitude, bounds.min_longitude],
+                    [bounds.max_latitude, bounds.max_longitude]
+                ], { padding: [24, 24] });
+
+                statusElement.textContent = gridPayload.source_incidents + " incidents combined into " + gridPayload.cells_count + " heat cells";
+            })
+            .catch((error) => {
+                console.error(error);
+                statusElement.textContent = "Unable to load the map layer";
+            });
+    </script>
+</body>
+</html>

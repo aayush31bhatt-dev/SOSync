@@ -1,0 +1,12 @@
+﻿*.iml
+.gradle/
+.gradle-user/
+.idea/
+local.properties
+/build/
+/captures/
+.DS_Store
+app/build/
+backend/.venv/
+backend/__pycache__/
+backend/*.log

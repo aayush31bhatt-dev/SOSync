@@ -1,0 +1,133 @@
+{
+  "generated_at_utc": "2026-04-10T23:22:23.150769",
+  "dataset": {
+    "file": "datasets\\india_crime_dataset.csv",
+    "rows": 100000
+  },
+  "area_risk_prediction": {
+    "target_threshold": 0.55,
+    "score_thresholds": {
+      "moderate": 0.46,
+      "high": 0.63
+    },
+    "feature_engineering": {
+      "spatial_grid": "3x3 neighborhood over 140x140 geo buckets",
+      "added_features": [
+        "nearby_incidents",
+        "nearby_incidents_log",
+        "nearby_avg_risk",
+        "nearby_avg_severity",
+        "nearby_avg_crime_frequency_area",
+        "local_density_ratio",
+        "city_avg_risk",
+        "city_incident_share",
+        "hour_sin",
+        "hour_cos"
+      ]
+    },
+    "logistic_high_risk_baseline": {
+      "score_regression": {
+        "mae": 0.23005290203463247,
+        "rmse": 0.2578217054659327,
+        "r2": -2.1669449735773068
+      },
+      "high_risk_classification": {
+        "accuracy": 0.8155,
+        "f1": 0.7712337259764415,
+        "precision": 0.7260700389105058,
+        "recall": 0.8223887174966946,
+        "roc_auc": 0.8991188379282414
+      }
+    },
+    "gradient_boosting_regressor": {
+      "score_regression": {
+        "mae": 0.07215266717216823,
+        "rmse": 0.08873926615793255,
+        "r2": 0.6248255715897064
+      },
+      "high_risk_classification": {
+        "accuracy": 0.8095,
+        "f1": 0.7692307692307693,
+        "precision": 0.7097615499254843,
+        "recall": 0.8395769061260467,
+        "roc_auc": 0.8988776275482572
+      }
+    },
+    "random_forest_regressor": {
+      "score_regression": {
+        "mae": 0.07540393382886498,
+        "rmse": 0.09222512918191704,
+        "r2": 0.594771382302995
+      },
+      "high_risk_classification": {
+        "accuracy": 0.7995,
+        "f1": 0.761829340724609,
+        "precision": 0.6915887850467289,
+        "recall": 0.8479506390480388,
+        "roc_auc": 0.8905735881248894
+      }
+    },
+    "best_model": "gradient_boosting_regressor",
+    "best_model_mode": "regression",
+    "best_model_metrics": {
+      "score_regression": {
+        "mae": 0.07215266717216823,
+        "rmse": 0.08873926615793255,
+        "r2": 0.6248255715897064
+      },
+      "high_risk_classification": {
+        "accuracy": 0.8095,
+        "f1": 0.7692307692307693,
+        "precision": 0.7097615499254843,
+        "recall": 0.8395769061260467,
+        "roc_auc": 0.8988776275482572
+      }
+    },
+    "source_rows": 100000,
+    "used_rows": 30000,
+    "sampling_applied": true,
+    "train_size": 24000,
+    "test_size": 6000
+  },
+  "danger_heatmap_comparison": {
+    "kmeans": {
+      "clusters": 24,
+      "silhouette": 0.749
+    },
+    "dbscan": {
+      "clusters": 0,
+      "silhouette": 0.0,
+      "noise_ratio": 1.0,
+      "eps_meters": 850,
+      "min_samples": 16
+    },
+    "recommended": "kmeans",
+    "risk_zone_labeling": "quantile bands on cluster risk_score: top 20% high, next 40% moderate, remaining low"
+  },
+  "behavior_anomaly_detection": {
+    "route_baseline_metric": "distance from city centroid (km)",
+    "deviation_threshold_km": 9.078,
+    "speed_fallback_threshold_kmph": 39.0,
+    "metrics": {
+      "precision": 0.1129,
+      "recall": 0.3126,
+      "f1": 0.1659,
+      "estimated_anomaly_rate": 0.1205
+    },
+    "train_size": 80000,
+    "test_size": 20000
+  },
+  "predictive_unsafe_alerts": {
+    "target_threshold": 0.55,
+    "metrics": {
+      "accuracy": 0.6039019509754877,
+      "f1": 0.5132177548260175,
+      "precision": 0.4823760545475558,
+      "recall": 0.5482726914488375,
+      "roc_auc": 0.6291257451053822
+    },
+    "train_size": 79960,
+    "test_size": 19990,
+    "dataset_strategy": "city-ordered events with one-step-ahead high-risk target"
+  }
+}
