@@ -1211,6 +1211,41 @@ def health() -> dict:
     }
 
 
+@app.get("/api/auth-db-health")
+def auth_db_health() -> dict:
+    now_ts = int(time.time())
+    try:
+        with get_connection() as connection:
+            users_count = int(
+                connection.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
+            )
+            messages_count = int(
+                connection.execute("SELECT COUNT(*) AS count FROM direct_messages").fetchone()["count"]
+            )
+            active_location_shares = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM live_location_shares
+                    WHERE is_active = 1 AND expires_at >= ?
+                    """,
+                    (now_ts,),
+                ).fetchone()["count"]
+            )
+
+        return {
+            "status": "ok",
+            "users_count": users_count,
+            "direct_messages_count": messages_count,
+            "active_live_location_shares": active_location_shares,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "detail": str(exc),
+        }
+
+
 @app.get("/api/heatmap/summary")
 def heatmap_summary() -> dict:
     return dataset_summary()

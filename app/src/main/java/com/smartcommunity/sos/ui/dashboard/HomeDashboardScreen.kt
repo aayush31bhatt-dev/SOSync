@@ -165,6 +165,7 @@ private val BACKEND_BASE_URL = ApiConfig.baseUrl
 private const val HOME_MAP_ZOOM = 16
 private const val HOME_TILE_SIZE_PX = 256
 private const val HOME_MAP_TIMEOUT_MS = 2000
+private const val HOME_API_TIMEOUT_MS = 15000
 private val HOME_MAP_TILE_URLS = listOf(
     "https://basemaps.cartocdn.com/voyager/%d/%d/%d@2x.png",
     "https://basemaps.cartocdn.com/light_all/%d/%d/%d@2x.png",
@@ -1270,7 +1271,13 @@ fun HomeDashboardScreen(currentUsername: String) {
                                         }
                                     }.getOrDefault(threadMessages)
                                 } else {
-                                    chatStatusText = "Could not send message."
+                                    val failureText = sent.exceptionOrNull()?.message.orEmpty()
+                                    chatStatusText = when {
+                                        failureText.contains("401") -> "Session expired. Please login again."
+                                        failureText.contains("403") -> "Permission denied. Please login again."
+                                        failureText.isNotBlank() -> failureText
+                                        else -> "Could not send message."
+                                    }
                                 }
                             }
                         }
@@ -2730,14 +2737,15 @@ private fun getJsonAuthorized(url: String, authToken: String): JSONObject {
     val endpoint = URL(url)
     val connection = endpoint.openConnection() as HttpURLConnection
     connection.requestMethod = "GET"
-    connection.connectTimeout = HOME_MAP_TIMEOUT_MS
-    connection.readTimeout = HOME_MAP_TIMEOUT_MS
+    connection.connectTimeout = HOME_API_TIMEOUT_MS
+    connection.readTimeout = HOME_API_TIMEOUT_MS
     connection.setRequestProperty("Authorization", "Bearer $authToken")
 
     return try {
         val responseCode = connection.responseCode
         if (responseCode !in 200..299) {
-            throw IllegalStateException("HTTP $responseCode from $url")
+            val detail = readErrorDetail(connection)
+            throw IllegalStateException(detail ?: "HTTP $responseCode from $url")
         }
         val body = connection.inputStream.bufferedReader().use { it.readText() }
         JSONObject(body)
@@ -2750,8 +2758,8 @@ private fun postJsonAuthorized(url: String, authToken: String, payload: JSONObje
     val endpoint = URL(url)
     val connection = endpoint.openConnection() as HttpURLConnection
     connection.requestMethod = "POST"
-    connection.connectTimeout = HOME_MAP_TIMEOUT_MS
-    connection.readTimeout = HOME_MAP_TIMEOUT_MS
+    connection.connectTimeout = HOME_API_TIMEOUT_MS
+    connection.readTimeout = HOME_API_TIMEOUT_MS
     connection.setRequestProperty("Content-Type", "application/json")
     connection.setRequestProperty("Authorization", "Bearer $authToken")
     connection.doOutput = true
@@ -2762,7 +2770,8 @@ private fun postJsonAuthorized(url: String, authToken: String, payload: JSONObje
         }
         val responseCode = connection.responseCode
         if (responseCode !in 200..299) {
-            throw IllegalStateException("HTTP $responseCode from $url")
+            val detail = readErrorDetail(connection)
+            throw IllegalStateException(detail ?: "HTTP $responseCode from $url")
         }
         val body = connection.inputStream.bufferedReader().use { it.readText() }
         JSONObject(body.ifBlank { "{}" })
@@ -2922,8 +2931,8 @@ private fun postJson(url: String, payload: JSONObject): JSONObject {
     val endpoint = URL(url)
     val connection = endpoint.openConnection() as HttpURLConnection
     connection.requestMethod = "POST"
-    connection.connectTimeout = HOME_MAP_TIMEOUT_MS
-    connection.readTimeout = HOME_MAP_TIMEOUT_MS
+    connection.connectTimeout = HOME_API_TIMEOUT_MS
+    connection.readTimeout = HOME_API_TIMEOUT_MS
     connection.setRequestProperty("Content-Type", "application/json")
     connection.doOutput = true
 
@@ -2934,7 +2943,8 @@ private fun postJson(url: String, payload: JSONObject): JSONObject {
 
         val responseCode = connection.responseCode
         if (responseCode !in 200..299) {
-            throw IllegalStateException("HTTP $responseCode from $url")
+            val detail = readErrorDetail(connection)
+            throw IllegalStateException(detail ?: "HTTP $responseCode from $url")
         }
 
         val body = connection.inputStream.bufferedReader().use { it.readText() }
@@ -2944,7 +2954,7 @@ private fun postJson(url: String, payload: JSONObject): JSONObject {
     }
 }
 
-private fun getJson(url: String, timeoutMs: Int = HOME_MAP_TIMEOUT_MS): JSONObject {
+private fun getJson(url: String, timeoutMs: Int = HOME_API_TIMEOUT_MS): JSONObject {
     val endpoint = URL(url)
     val connection = endpoint.openConnection() as HttpURLConnection
     connection.requestMethod = "GET"
@@ -2961,6 +2971,19 @@ private fun getJson(url: String, timeoutMs: Int = HOME_MAP_TIMEOUT_MS): JSONObje
     } finally {
         connection.disconnect()
     }
+}
+
+private fun readErrorDetail(connection: HttpURLConnection): String? {
+    val raw = runCatching {
+        connection.errorStream?.bufferedReader()?.use { it.readText() }
+    }.getOrNull()?.trim().orEmpty()
+    if (raw.isBlank()) {
+        return null
+    }
+
+    return runCatching {
+        JSONObject(raw).optString("detail").takeIf { it.isNotBlank() } ?: raw
+    }.getOrDefault(raw)
 }
 
 private fun fetchShortestPathOnRoad(
