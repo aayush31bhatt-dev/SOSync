@@ -38,7 +38,31 @@ from app.auth.routes import router as auth_router
 from sklearn.cluster import DBSCAN
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DATASET_PATH = PROJECT_ROOT / "datasets" / "india_crime_dataset.csv"
+
+
+def _resolve_dataset_path() -> Path:
+    env_path = os.getenv("SMARTCOMMUNITY_DATASET_PATH", "").strip()
+    if env_path:
+        configured = Path(env_path).expanduser()
+        if configured.exists():
+            return configured
+
+    candidates = [
+        PROJECT_ROOT / "datasets" / "india_crime_dataset.csv",
+        PROJECT_ROOT / "backend" / "datasets" / "india_crime_dataset.csv",
+        Path.cwd() / "datasets" / "india_crime_dataset.csv",
+        Path.cwd().parent / "datasets" / "india_crime_dataset.csv",
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    # Fallback path so responses still include a deterministic dataset file name.
+    return candidates[0]
+
+
+DATASET_PATH = _resolve_dataset_path()
 
 app = FastAPI(
     title="Smart Community SOS API",
@@ -302,6 +326,9 @@ def _build_helper_leaderboard() -> tuple[str | None, list[dict]]:
 @lru_cache(maxsize=1)
 def load_incidents() -> list[dict]:
     incidents: list[dict] = []
+
+    if not DATASET_PATH.exists():
+        return incidents
 
     with DATASET_PATH.open("r", encoding="utf-8", newline="") as csv_file:
         reader = csv.DictReader(csv_file)
@@ -983,6 +1010,21 @@ def helper_leaderboard(limit: int = Query(default=100, ge=1, le=500)) -> dict:
 @lru_cache(maxsize=1)
 def dataset_summary() -> dict:
     incidents = load_incidents()
+    if not incidents:
+        return {
+            "dataset_file": DATASET_PATH.name,
+            "total_incidents": 0,
+            "average_risk_score": 0.0,
+            "top_cities": [],
+            "top_crime_types": [],
+            "bounds": {
+                "min_latitude": 0.0,
+                "max_latitude": 0.0,
+                "min_longitude": 0.0,
+                "max_longitude": 0.0,
+            },
+        }
+
     latitudes = [incident["latitude"] for incident in incidents]
     longitudes = [incident["longitude"] for incident in incidents]
     risk_scores = [incident["risk_score"] for incident in incidents]
