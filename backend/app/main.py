@@ -1211,6 +1211,14 @@ def health() -> dict:
     }
 
 
+@app.get("/")
+def root_health() -> dict:
+    return {
+        "status": "ok",
+        "service": "Smart Community SOS API",
+    }
+
+
 @app.get("/api/auth-db-health")
 def auth_db_health() -> dict:
     now_ts = int(time.time())
