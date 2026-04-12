@@ -6,7 +6,15 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB_PATH = PROJECT_ROOT / "backend" / "app" / "smartcommunity.db"
-DB_PATH = Path(os.getenv("SMARTCOMMUNITY_DB_PATH", str(DEFAULT_DB_PATH))).expanduser()
+
+_configured_db_path = os.getenv("SMARTCOMMUNITY_DB_PATH", "").strip()
+if _configured_db_path:
+    DB_PATH = Path(_configured_db_path).expanduser()
+elif os.getenv("RENDER", "").strip().lower() == "true":
+    DB_PATH = Path("/var/data/smartcommunity.db")
+else:
+    DB_PATH = DEFAULT_DB_PATH
+
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 

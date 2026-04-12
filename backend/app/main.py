@@ -33,7 +33,7 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
-from app.auth.db import get_connection, init_auth_db
+from app.auth.db import DB_PATH, get_connection, init_auth_db
 from app.auth.routes import router as auth_router
 from sklearn.cluster import DBSCAN
 
@@ -1243,6 +1243,7 @@ def auth_db_health() -> dict:
 
         return {
             "status": "ok",
+            "db_path": str(DB_PATH),
             "users_count": users_count,
             "direct_messages_count": messages_count,
             "active_live_location_shares": active_location_shares,
