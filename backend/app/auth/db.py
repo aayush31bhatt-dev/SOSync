@@ -7,15 +7,43 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB_PATH = PROJECT_ROOT / "backend" / "app" / "smartcommunity.db"
 
-_configured_db_path = os.getenv("SMARTCOMMUNITY_DB_PATH", "").strip()
-if _configured_db_path:
-    DB_PATH = Path(_configured_db_path).expanduser()
-elif os.getenv("RENDER", "").strip().lower() == "true":
-    DB_PATH = Path("/var/data/smartcommunity.db")
-else:
-    DB_PATH = DEFAULT_DB_PATH
 
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+def _path_writable(path: Path) -> bool:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        probe = path.parent / ".smartcommunity-db-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_db_path() -> Path:
+    configured = os.getenv("SMARTCOMMUNITY_DB_PATH", "").strip()
+    candidates: list[Path] = []
+
+    if configured:
+        candidates.append(Path(configured).expanduser())
+
+    # Prefer Render persistent disk path when available.
+    candidates.append(Path("/var/data/smartcommunity.db"))
+    candidates.append(DEFAULT_DB_PATH)
+    candidates.append(Path("/tmp/smartcommunity.db"))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if _path_writable(candidate):
+            return candidate
+
+    return DEFAULT_DB_PATH
+
+
+DB_PATH = _resolve_db_path()
 
 
 def get_connection() -> sqlite3.Connection:

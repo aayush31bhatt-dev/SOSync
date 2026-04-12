@@ -25,6 +25,8 @@ services:
         value: "false"
       - key: SMARTCOMMUNITY_MAX_HEATMAP_POINTS
         value: "12000"
+      - key: SMARTCOMMUNITY_EVIDENCE_DIR
+        value: /var/data/evidence_uploads
     disk:
       name: sosync-data
       mountPath: /var/data

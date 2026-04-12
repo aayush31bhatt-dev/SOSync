@@ -43,13 +43,44 @@ from .security import (
 router = APIRouter(tags=["auth"])
 limiter = LoginAttemptLimiter()
 logger = logging.getLogger(__name__)
-EVIDENCE_STORAGE_DIR = Path(
-    os.getenv(
-        "SMARTCOMMUNITY_EVIDENCE_DIR",
-        str(Path(__file__).resolve().parents[3] / "backend" / "app" / "evidence_uploads"),
-    )
-).expanduser()
-EVIDENCE_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _dir_writable(directory: Path) -> bool:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / ".smartcommunity-evidence-probe"
+        probe.write_bytes(b"ok")
+        probe.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_evidence_storage_dir() -> Path:
+    configured = os.getenv("SMARTCOMMUNITY_EVIDENCE_DIR", "").strip()
+    candidates: list[Path] = []
+
+    if configured:
+        candidates.append(Path(configured).expanduser())
+
+    candidates.append(Path("/var/data/evidence_uploads"))
+    candidates.append(Path("/tmp/smartcommunity-evidence"))
+    candidates.append(Path(__file__).resolve().parents[3] / "backend" / "app" / "evidence_uploads")
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if _dir_writable(candidate):
+            return candidate
+
+    # Final best-effort fallback; upload call will return explicit write errors if this is not writable.
+    return Path("/tmp")
+
+
+EVIDENCE_STORAGE_DIR = _resolve_evidence_storage_dir()
 MAX_EVIDENCE_UPLOAD_BYTES = int(os.getenv("MAX_EVIDENCE_UPLOAD_BYTES", str(25 * 1024 * 1024)))
 
 
