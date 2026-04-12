@@ -12,7 +12,6 @@ import android.graphics.Canvas as AndroidCanvas
 import android.graphics.drawable.GradientDrawable
 import android.location.Location
 import android.net.Uri
-import android.os.Build
 import android.os.Looper
 import android.util.Log
 import android.view.MotionEvent
@@ -42,12 +41,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -90,6 +93,7 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
+import com.smartcommunity.sos.config.ApiConfig
 import com.smartcommunity.sos.ui.theme.ButtonBorder
 import com.smartcommunity.sos.ui.theme.ButtonSurface
 import com.smartcommunity.sos.ui.theme.SmartCommunitySOSTheme
@@ -123,14 +127,7 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
 
-private val BACKEND_BASE_URL = if (
-    Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
-    Build.MODEL.contains("Emulator", ignoreCase = true)
-) {
-    "http://10.0.2.2:8001"
-} else {
-    "http://127.0.0.1:8001"
-}
+private val BACKEND_BASE_URL = ApiConfig.baseUrl
 private const val REQUEST_TIMEOUT_MS = 3000
 private const val AI_REQUEST_TIMEOUT_MS = 5000
 private const val TILE_FETCH_TIMEOUT_MS = 1000
@@ -408,6 +405,10 @@ fun MapScreen() {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
+                MapFeaturesHeader()
+            }
+
+            item {
                 HeatmapCard(
                     uiState = uiState,
                     onRetry = { reloadToken++ }
@@ -429,6 +430,57 @@ fun MapScreen() {
             item {
                 CrimeGraphsSection()
             }
+        }
+    }
+}
+
+@Composable
+private fun MapFeaturesHeader() {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xCC172235),
+        border = BorderStroke(1.dp, Color(0x669DCBFF))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Surface(
+                modifier = Modifier.size(34.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFF1F3B5A),
+                border = BorderStroke(1.dp, Color(0x88A7C7FF))
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Map,
+                        contentDescription = "Map features",
+                        tint = Color(0xFFE7F1FF),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = "Map & AI Features",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFFE7F1FF)
+            )
+
+            Icon(
+                imageVector = Icons.Filled.AutoAwesome,
+                contentDescription = null,
+                tint = Color(0xFF9ED0FF),
+                modifier = Modifier.size(18.dp)
+            )
         }
     }
 }
@@ -1182,7 +1234,7 @@ private fun CrimeDotMapView(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(340.dp)
+            .fillMaxHeight()
             .clip(RoundedCornerShape(18.dp))
             .background(Color(0xFF1A1A1A))
     ) {

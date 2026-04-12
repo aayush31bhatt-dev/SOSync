@@ -1,6 +1,6 @@
 package com.smartcommunity.sos.data.auth
 
-import android.os.Build
+import com.smartcommunity.sos.config.ApiConfig
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -8,14 +8,7 @@ import java.net.URL
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-private val AUTH_BASE_URL = if (
-    Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
-    Build.MODEL.contains("Emulator", ignoreCase = true)
-) {
-    "http://10.0.2.2:8001"
-} else {
-    "http://127.0.0.1:8001"
-}
+private val AUTH_BASE_URL = ApiConfig.baseUrl
 private const val AUTH_TIMEOUT_MS = 10_000
 
 data class RegisterInput(

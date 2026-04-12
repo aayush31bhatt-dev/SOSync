@@ -8,7 +8,6 @@ import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.Location
 import android.net.Uri
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -73,6 +72,7 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
+import com.smartcommunity.sos.config.ApiConfig
 import com.smartcommunity.sos.ui.theme.SmartCommunitySOSTheme
 import com.smartcommunity.sos.ui.theme.ButtonBorder
 import com.smartcommunity.sos.ui.theme.ButtonSurface
@@ -88,14 +88,7 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.resume
 
-private val BACKEND_BASE_URL = if (
-    Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
-    Build.MODEL.contains("Emulator", ignoreCase = true)
-) {
-    "http://10.0.2.2:8001"
-} else {
-    "http://127.0.0.1:8001"
-}
+private val BACKEND_BASE_URL = ApiConfig.baseUrl
 private val GlassCardColor = Color(0xFF262332)
 private val GlassBorderColor = Color(0xFF534D69)
 private val PastelSky = Color(0xFFAEDCFF)

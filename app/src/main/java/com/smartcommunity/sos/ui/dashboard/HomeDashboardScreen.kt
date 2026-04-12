@@ -11,9 +11,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.location.Geocoder
 import android.location.Location
+import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.os.Looper
+import android.provider.MediaStore
 import android.graphics.drawable.GradientDrawable
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -47,6 +49,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -130,6 +133,7 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import com.smartcommunity.sos.config.ApiConfig
 import com.smartcommunity.sos.ui.theme.SmartCommunitySOSTheme
 import com.smartcommunity.sos.ui.theme.ButtonBorder
 import com.smartcommunity.sos.ui.theme.ButtonSurface
@@ -146,6 +150,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import org.json.JSONArray
+import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
@@ -156,14 +161,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.abs
 
-private val BACKEND_BASE_URL = if (
-    Build.FINGERPRINT.contains("generic", ignoreCase = true) ||
-    Build.MODEL.contains("Emulator", ignoreCase = true)
-) {
-    "http://10.0.2.2:8001"
-} else {
-    "http://127.0.0.1:8001"
-}
+private val BACKEND_BASE_URL = ApiConfig.baseUrl
 private const val HOME_MAP_ZOOM = 16
 private const val HOME_TILE_SIZE_PX = 256
 private const val HOME_MAP_TIMEOUT_MS = 2000
@@ -262,6 +260,11 @@ private data class MapNavigationTarget(
     val label: String
 )
 
+private enum class EvidenceCaptureMode {
+    AUDIO,
+    VIDEO
+}
+
 private data class Quadruple<A, B, C, D>(
     val first: A,
     val second: B,
@@ -326,6 +329,92 @@ fun HomeDashboardScreen(currentUsername: String) {
         )
     }
     var locationPermissionGranted by remember { mutableStateOf(hasLocationPermission(context)) }
+    var showEvidenceModePicker by remember { mutableStateOf(false) }
+    var isEvidenceModeActive by rememberSaveable { mutableStateOf(false) }
+    var activeEvidenceCaptureMode by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingEvidenceCaptureMode by remember { mutableStateOf<EvidenceCaptureMode?>(null) }
+    val activeAudioRecorder = remember { mutableStateOf<MediaRecorder?>(null) }
+
+    fun startAudioEvidenceCapture() {
+        val outputDir = File(context.getExternalFilesDir(null), "evidence")
+        if (!outputDir.exists()) {
+            outputDir.mkdirs()
+        }
+        val outputFile = File(outputDir, "evidence_audio_${System.currentTimeMillis()}.m4a")
+
+        val recorder = MediaRecorder()
+        runCatching {
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            recorder.setAudioSamplingRate(44100)
+            recorder.setAudioEncodingBitRate(128000)
+            recorder.setOutputFile(outputFile.absolutePath)
+            recorder.prepare()
+            recorder.start()
+        }.onSuccess {
+            activeAudioRecorder.value = recorder
+            isEvidenceModeActive = true
+            activeEvidenceCaptureMode = EvidenceCaptureMode.AUDIO.name
+            sosStatus = "Evidence recording started (audio). Tap Evidence Mode again to stop."
+        }.onFailure {
+            runCatching { recorder.reset() }
+            runCatching { recorder.release() }
+            sosStatus = "Could not start audio recorder. Check microphone permission and try again."
+        }
+    }
+
+    fun stopEvidenceCapture() {
+        when (activeEvidenceCaptureMode) {
+            EvidenceCaptureMode.AUDIO.name -> {
+                val recorder = activeAudioRecorder.value
+                if (recorder != null) {
+                    runCatching {
+                        recorder.stop()
+                    }
+                    runCatching { recorder.reset() }
+                    runCatching { recorder.release() }
+                }
+                activeAudioRecorder.value = null
+                isEvidenceModeActive = false
+                activeEvidenceCaptureMode = null
+                sosStatus = "Evidence recording stopped (audio saved)."
+            }
+
+            EvidenceCaptureMode.VIDEO.name -> {
+                isEvidenceModeActive = false
+                activeEvidenceCaptureMode = null
+                sosStatus = "Video capture session stopped."
+            }
+
+            else -> {
+                isEvidenceModeActive = false
+                activeEvidenceCaptureMode = null
+            }
+        }
+    }
+
+    fun hasEvidencePermission(mode: EvidenceCaptureMode): Boolean {
+        val permission = when (mode) {
+            EvidenceCaptureMode.AUDIO -> Manifest.permission.RECORD_AUDIO
+            EvidenceCaptureMode.VIDEO -> Manifest.permission.CAMERA
+        }
+        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    }
+
+    val videoEvidenceLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (activeEvidenceCaptureMode == EvidenceCaptureMode.VIDEO.name) {
+            isEvidenceModeActive = false
+            activeEvidenceCaptureMode = null
+            sosStatus = if (result.resultCode == android.app.Activity.RESULT_OK) {
+                "Evidence video captured successfully."
+            } else {
+                "Video capture stopped."
+            }
+        }
+    }
 
     fun navigateHomeMapToUser(latitude: Double, longitude: Double, label: String) {
         val origin = currentLocation
@@ -382,6 +471,54 @@ fun HomeDashboardScreen(currentUsername: String) {
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         notificationPermissionGranted = granted
+    }
+
+    val evidencePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val requestedMode = pendingEvidenceCaptureMode
+        pendingEvidenceCaptureMode = null
+
+        if (requestedMode == null) {
+            return@rememberLauncherForActivityResult
+        }
+
+        val permissionKey = when (requestedMode) {
+            EvidenceCaptureMode.AUDIO -> Manifest.permission.RECORD_AUDIO
+            EvidenceCaptureMode.VIDEO -> Manifest.permission.CAMERA
+        }
+
+        val granted = permissions[permissionKey] == true
+        if (!granted) {
+            sosStatus = "Permission denied for Evidence Mode."
+            return@rememberLauncherForActivityResult
+        }
+
+        when (requestedMode) {
+            EvidenceCaptureMode.AUDIO -> startAudioEvidenceCapture()
+            EvidenceCaptureMode.VIDEO -> {
+                val videoIntent = Intent(MediaStore.ACTION_VIDEO_CAPTURE)
+                if (videoIntent.resolveActivity(context.packageManager) != null) {
+                    isEvidenceModeActive = true
+                    activeEvidenceCaptureMode = EvidenceCaptureMode.VIDEO.name
+                    sosStatus = "Camera opened for evidence video."
+                    videoEvidenceLauncher.launch(videoIntent)
+                } else {
+                    sosStatus = "No camera app available for video capture."
+                }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            activeAudioRecorder.value?.let { recorder ->
+                runCatching { recorder.stop() }
+                runCatching { recorder.reset() }
+                runCatching { recorder.release() }
+            }
+            activeAudioRecorder.value = null
+        }
     }
 
     LaunchedEffect(locationPermissionGranted) {
@@ -832,6 +969,14 @@ fun HomeDashboardScreen(currentUsername: String) {
                                         }
                                     }
 
+                                    "EM" -> {
+                                        if (isEvidenceModeActive) {
+                                            stopEvidenceCapture()
+                                        } else {
+                                            showEvidenceModePicker = true
+                                        }
+                                    }
+
                                     else -> {
                                         sosStatus = "${action.title} will be available soon."
                                     }
@@ -844,26 +989,28 @@ fun HomeDashboardScreen(currentUsername: String) {
                 item {
                     // Area safety map section with a placeholder map panel.
                     DashboardAnimatedItem(index = 3, shouldAnimate = shouldAnimateIntro) {
-                        AreaSafetyMapSection(
-                            location = currentLocation,
-                            sharedLocation = activeIncomingSharedLocation,
-                            navigationTarget = activeNavigationTarget,
-                            routePoints = activeNavigationRoute,
-                            mapZoom = mapZoomLevel,
-                            onZoomIn = { mapZoomLevel = (mapZoomLevel + 1).coerceAtMost(22) },
-                            onZoomOut = { mapZoomLevel = (mapZoomLevel - 1).coerceAtLeast(3) },
-                            onExpandRequest = { isMapExpanded = true },
-                            onNavigateToSharedLocation = activeIncomingSharedLocation?.let { shared ->
-                                {
-                                    navigateHomeMapToUser(
-                                        latitude = shared.latitude,
-                                        longitude = shared.longitude,
-                                        label = shared.locationLabel?.takeIf { it.isNotBlank() }
-                                            ?: "Shared by ${shared.senderName}"
-                                    )
+                        Column(modifier = Modifier.padding(top = 14.dp)) {
+                            AreaSafetyMapSection(
+                                location = currentLocation,
+                                sharedLocation = activeIncomingSharedLocation,
+                                navigationTarget = activeNavigationTarget,
+                                routePoints = activeNavigationRoute,
+                                mapZoom = mapZoomLevel,
+                                onZoomIn = { mapZoomLevel = (mapZoomLevel + 1).coerceAtMost(22) },
+                                onZoomOut = { mapZoomLevel = (mapZoomLevel - 1).coerceAtLeast(3) },
+                                onExpandRequest = { isMapExpanded = true },
+                                onNavigateToSharedLocation = activeIncomingSharedLocation?.let { shared ->
+                                    {
+                                        navigateHomeMapToUser(
+                                            latitude = shared.latitude,
+                                            longitude = shared.longitude,
+                                            label = shared.locationLabel?.takeIf { it.isNotBlank() }
+                                                ?: "Shared by ${shared.senderName}"
+                                        )
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
 
@@ -1179,6 +1326,55 @@ fun HomeDashboardScreen(currentUsername: String) {
                 )
             }
         }
+    }
+
+    if (showEvidenceModePicker) {
+        AlertDialog(
+            onDismissRequest = { showEvidenceModePicker = false },
+            title = { Text(text = "Start Evidence Mode") },
+            text = { Text(text = "Choose what to capture. Tap Evidence Mode again anytime to stop.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showEvidenceModePicker = false
+                    val mode = EvidenceCaptureMode.AUDIO
+                    if (hasEvidencePermission(mode)) {
+                        startAudioEvidenceCapture()
+                    } else {
+                        pendingEvidenceCaptureMode = mode
+                        evidencePermissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                    }
+                }) {
+                    Text("Voice Recorder")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        showEvidenceModePicker = false
+                        val mode = EvidenceCaptureMode.VIDEO
+                        if (hasEvidencePermission(mode)) {
+                            val videoIntent = Intent(MediaStore.ACTION_VIDEO_CAPTURE)
+                            if (videoIntent.resolveActivity(context.packageManager) != null) {
+                                isEvidenceModeActive = true
+                                activeEvidenceCaptureMode = EvidenceCaptureMode.VIDEO.name
+                                sosStatus = "Camera opened for evidence video."
+                                videoEvidenceLauncher.launch(videoIntent)
+                            } else {
+                                sosStatus = "No camera app available for video capture."
+                            }
+                        } else {
+                            pendingEvidenceCaptureMode = mode
+                            evidencePermissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+                        }
+                    }) {
+                        Text("Camera")
+                    }
+                    TextButton(onClick = { showEvidenceModePicker = false }) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        )
     }
 }
 
@@ -1711,6 +1907,8 @@ private fun QuickActionGrid(
                 }
             }
         }
+
+        Spacer(modifier = Modifier.height(10.dp))
     }
 }
 
@@ -1721,7 +1919,10 @@ private fun ActionCard(
     modifier: Modifier = Modifier
 ) {
     Card(
-        modifier = modifier.clickable(onClick = onClick),
+        modifier = modifier
+            .height(116.dp)
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
         border = BorderStroke(1.dp, GlassBorderColor),
         colors = CardDefaults.cardColors(
             containerColor = GlassCardColor
@@ -1730,8 +1931,8 @@ private fun ActionCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             PlaceholderIcon(label = item.shortLabel, icon = item.icon)
             Text(
@@ -1761,8 +1962,13 @@ private fun AreaSafetyMapSection(
     onExpandRequest: () -> Unit,
     onNavigateToSharedLocation: (() -> Unit)?
 ) {
+    val context = LocalContext.current
+    val streetViewTarget = navigationTarget?.let { GeoPoint(it.latitude, it.longitude) }
+        ?: location?.let { GeoPoint(it.latitude, it.longitude) }
+        ?: sharedLocation?.let { GeoPoint(it.latitude, it.longitude) }
+
     Column(
-        modifier = Modifier.padding(top = 6.dp),
+        modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         LiveLocationMap(
@@ -1775,16 +1981,57 @@ private fun AreaSafetyMapSection(
             onZoomOut = onZoomOut,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(280.dp),
+                .height(300.dp),
             onExpandToggle = onExpandRequest,
             isExpanded = false
         )
 
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
+                onClick = {
+                    streetViewTarget?.let {
+                        openStreetViewAtLocation(
+                            context = context,
+                            latitude = it.latitude,
+                            longitude = it.longitude
+                        )
+                    }
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(38.dp),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, ButtonBorder),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                Text(text = "Street View")
+            }
+
+            OutlinedButton(
+                onClick = onExpandRequest,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(38.dp),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, ButtonBorder),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                Text(text = "Expand map")
+            }
+        }
+
         if (sharedLocation != null && onNavigateToSharedLocation != null) {
             OutlinedButton(
                 onClick = onNavigateToSharedLocation,
-                modifier = Modifier.fillMaxWidth(),
-                border = BorderStroke(1.dp, ButtonBorder)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, ButtonBorder),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
             ) {
                 Text(text = "Navigate to shared trusted contact")
             }
@@ -1858,25 +2105,7 @@ private fun LiveLocationMap(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(24.dp))
-            .background(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF07111F),
-                        Color(0xFF0B1728),
-                        Color(0xFF10243A)
-                    )
-                )
-            )
-            .border(
-                width = 1.5.dp,
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0x88A7C7FF),
-                        Color(0x44FFFFFF)
-                    )
-                ),
-                shape = RoundedCornerShape(24.dp)
-            ),
+            .background(Color(0xFF0B1728)),
         contentAlignment = Alignment.Center
     ) {
         AndroidView(
@@ -1968,36 +2197,6 @@ private fun LiveLocationMap(
                 }
             }
         )
-
-        val streetViewTarget = centerPoint
-            ?: location?.let { GeoPoint(it.latitude, it.longitude) }
-            ?: sharedLocation?.let { GeoPoint(it.latitude, it.longitude) }
-
-        if (streetViewTarget != null) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(12.dp)
-                    .clickable {
-                        openStreetViewAtLocation(
-                            context = context,
-                            latitude = streetViewTarget.latitude,
-                            longitude = streetViewTarget.longitude
-                        )
-                    },
-                shape = RoundedCornerShape(10.dp),
-                color = Color(0xB20E1B2A),
-                border = BorderStroke(1.dp, Color(0x669DCBFF))
-            ) {
-                Text(
-                    text = "Street View",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFFE7F1FF),
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                )
-            }
-        }
-
             Surface(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
@@ -2010,9 +2209,18 @@ private fun LiveLocationMap(
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    IconButton(
+                    Button(
                         onClick = onZoomIn,
-                        modifier = Modifier.size(UnifiedIconButtonSize)
+                        modifier = Modifier
+                            .width(40.dp)
+                            .height(30.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(0.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ButtonSurface,
+                            contentColor = Color.White
+                        ),
+                        border = BorderStroke(1.dp, ButtonBorder)
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Add,
@@ -2026,9 +2234,18 @@ private fun LiveLocationMap(
                         color = Color.White,
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     )
-                    IconButton(
+                    Button(
                         onClick = onZoomOut,
-                        modifier = Modifier.size(UnifiedIconButtonSize)
+                        modifier = Modifier
+                            .width(40.dp)
+                            .height(30.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(0.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ButtonSurface,
+                            contentColor = Color.White
+                        ),
+                        border = BorderStroke(1.dp, ButtonBorder)
                     ) {
                         Icon(
                             imageVector = Icons.Filled.Close,
@@ -2037,23 +2254,6 @@ private fun LiveLocationMap(
                         )
                     }
                 }
-            }
-
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(12.dp)
-                    .clickable { onExpandToggle() },
-                shape = RoundedCornerShape(10.dp),
-                color = Color(0xB20E1B2A),
-                border = BorderStroke(1.dp, Color(0x669DCBFF))
-            ) {
-                Text(
-                    text = if (isExpanded) "Tap to collapse" else "Tap to expand",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFFE7F1FF),
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                )
             }
 
             if (sharedLocation != null) {
