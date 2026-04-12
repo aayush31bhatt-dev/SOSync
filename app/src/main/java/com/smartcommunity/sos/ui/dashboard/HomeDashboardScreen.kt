@@ -273,6 +273,11 @@ private data class Quadruple<A, B, C, D>(
     val fourth: D
 )
 
+private data class EvidenceDispatchResult(
+    val evidenceUrl: String,
+    val deliveredCount: Int
+)
+
 private val quickActions = listOf(
     QuickActionItem("Share Location", "Send current location", "SL", Icons.Filled.LocationOn),
     QuickActionItem("Evidence Mode", "Auto-record audio/video", "EM", Icons.Filled.Check)
@@ -335,6 +340,56 @@ fun HomeDashboardScreen(currentUsername: String) {
     var activeEvidenceCaptureMode by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingEvidenceCaptureMode by remember { mutableStateOf<EvidenceCaptureMode?>(null) }
     val activeAudioRecorder = remember { mutableStateOf<MediaRecorder?>(null) }
+    var activeAudioEvidenceFile by remember { mutableStateOf<File?>(null) }
+
+    fun sendEvidenceToTrustedContactsInApp(evidenceFile: File, mimeType: String) {
+        val token = authSessionStore.getToken()
+        if (token.isNullOrBlank()) {
+            sosStatus = "Session expired. Login again to send evidence to trusted contacts."
+            return
+        }
+
+        val recipients = trustedContacts
+            .mapNotNull { it.username.trim().lowercase().takeIf { username -> username.isNotBlank() } }
+            .distinct()
+
+        if (recipients.isEmpty()) {
+            sosStatus = "Evidence saved. Link trusted contacts to app usernames to send directly in-app."
+            return
+        }
+
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    uploadEvidenceAndNotifyTrustedContacts(
+                        apiBaseUrl = BACKEND_BASE_URL,
+                        authToken = token,
+                        recipientUsernames = recipients,
+                        evidenceFile = evidenceFile,
+                        mimeType = mimeType
+                    )
+                }
+            }
+
+            if (result.isSuccess) {
+                val dispatch = result.getOrNull()
+                if (dispatch != null) {
+                    sosStatus = "Evidence sent in-app to ${dispatch.deliveredCount} trusted contact(s)."
+                } else {
+                    sosStatus = "Evidence uploaded, but no delivery summary was returned."
+                }
+            } else {
+                val failure = result.exceptionOrNull()?.message.orEmpty()
+                sosStatus = when {
+                    failure.contains("401") -> "Session expired. Login again to send evidence."
+                    failure.contains("404") -> "One or more trusted contacts were not found. Re-link usernames and retry."
+                    failure.contains("413") -> "Evidence file is too large to upload."
+                    failure.isNotBlank() -> failure
+                    else -> "Could not send evidence to trusted contacts."
+                }
+            }
+        }
+    }
 
     fun startAudioEvidenceCapture() {
         val outputDir = File(context.getExternalFilesDir(null), "evidence")
@@ -355,6 +410,7 @@ fun HomeDashboardScreen(currentUsername: String) {
             recorder.start()
         }.onSuccess {
             activeAudioRecorder.value = recorder
+            activeAudioEvidenceFile = outputFile
             isEvidenceModeActive = true
             activeEvidenceCaptureMode = EvidenceCaptureMode.AUDIO.name
             sosStatus = "Evidence recording started (audio). Tap Evidence Mode again to stop."
@@ -369,6 +425,7 @@ fun HomeDashboardScreen(currentUsername: String) {
         when (activeEvidenceCaptureMode) {
             EvidenceCaptureMode.AUDIO.name -> {
                 val recorder = activeAudioRecorder.value
+                val recordedFile = activeAudioEvidenceFile
                 if (recorder != null) {
                     runCatching {
                         recorder.stop()
@@ -377,9 +434,16 @@ fun HomeDashboardScreen(currentUsername: String) {
                     runCatching { recorder.release() }
                 }
                 activeAudioRecorder.value = null
+                activeAudioEvidenceFile = null
                 isEvidenceModeActive = false
                 activeEvidenceCaptureMode = null
-                sosStatus = "Evidence recording stopped (audio saved)."
+
+                val evidenceFile = recordedFile?.takeIf { it.exists() && it.length() > 0L }
+                if (evidenceFile != null) {
+                    sendEvidenceToTrustedContactsInApp(evidenceFile, "audio/mp4")
+                } else {
+                    sosStatus = "Evidence recording stopped, but the audio file could not be prepared for sharing."
+                }
             }
 
             EvidenceCaptureMode.VIDEO.name -> {
@@ -409,10 +473,28 @@ fun HomeDashboardScreen(currentUsername: String) {
         if (activeEvidenceCaptureMode == EvidenceCaptureMode.VIDEO.name) {
             isEvidenceModeActive = false
             activeEvidenceCaptureMode = null
-            sosStatus = if (result.resultCode == android.app.Activity.RESULT_OK) {
-                "Evidence video captured successfully."
+            if (result.resultCode == android.app.Activity.RESULT_OK) {
+                val videoUri = result.data?.data
+                if (videoUri != null) {
+                    scope.launch {
+                        val videoFile = withContext(Dispatchers.IO) {
+                            copyContentUriToEvidenceFile(
+                                context = context,
+                                sourceUri = videoUri,
+                                fallbackExtension = ".mp4"
+                            )
+                        }
+                        if (videoFile != null) {
+                            sendEvidenceToTrustedContactsInApp(videoFile, "video/mp4")
+                        } else {
+                            sosStatus = "Evidence video captured, but the file could not be prepared for upload."
+                        }
+                    }
+                } else {
+                    sosStatus = "Evidence video captured, but no shareable file was returned by camera app."
+                }
             } else {
-                "Video capture stopped."
+                sosStatus = "Video capture stopped."
             }
         }
     }
@@ -519,6 +601,7 @@ fun HomeDashboardScreen(currentUsername: String) {
                 runCatching { recorder.release() }
             }
             activeAudioRecorder.value = null
+            activeAudioEvidenceFile = null
         }
     }
 
@@ -1064,7 +1147,15 @@ fun HomeDashboardScreen(currentUsername: String) {
 
                                             val contact = lookup.getOrNull()
                                             if (contact == null) {
-                                                sosStatus = "No app user found for username '$normalizedUsername'."
+                                                val failureMessage = lookup.exceptionOrNull()?.message.orEmpty()
+                                                sosStatus = when {
+                                                    failureMessage.contains("401") -> "Session expired. Login again to add trusted contacts."
+                                                    failureMessage.contains("403") -> "Permission denied. Please login again."
+                                                    failureMessage.contains("404") -> "No app user found for username '$normalizedUsername'."
+                                                    failureMessage.contains("Unable to connect", ignoreCase = true) -> "Network issue. Check internet and try again."
+                                                    failureMessage.isNotBlank() -> failureMessage
+                                                    else -> "Could not add trusted contact right now. Try again."
+                                                }
                                             } else if (trustedContacts.any { it.id == contact.id }) {
                                                 sosStatus = "${contact.name} is already in trusted contacts."
                                             } else {
@@ -2602,6 +2693,104 @@ private fun openSmsComposerForContacts(
     }.getOrDefault(false)
 }
 
+private fun copyContentUriToEvidenceFile(
+    context: Context,
+    sourceUri: Uri,
+    fallbackExtension: String
+): File? {
+    val outputDir = File(context.getExternalFilesDir(null), "evidence")
+    if (!outputDir.exists()) {
+        outputDir.mkdirs()
+    }
+
+    val extension = fallbackExtension.ifBlank { ".bin" }
+    val outputFile = File(outputDir, "evidence_${System.currentTimeMillis()}$extension")
+    return runCatching {
+        context.contentResolver.openInputStream(sourceUri)?.use { input ->
+            outputFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        outputFile.takeIf { it.exists() && it.length() > 0L }
+    }.getOrNull()
+}
+
+private fun uploadEvidenceAndNotifyTrustedContacts(
+    apiBaseUrl: String,
+    authToken: String,
+    recipientUsernames: List<String>,
+    evidenceFile: File,
+    mimeType: String
+): EvidenceDispatchResult {
+    val boundary = "----SOSyncBoundary${System.currentTimeMillis()}"
+    val uploadUrl = "$apiBaseUrl/evidence/upload"
+    val connection = (URL(uploadUrl).openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        connectTimeout = HOME_API_TIMEOUT_MS
+        readTimeout = HOME_API_TIMEOUT_MS
+        doOutput = true
+        setRequestProperty("Authorization", "Bearer $authToken")
+        setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+    }
+
+    val uploadResponse = try {
+        connection.outputStream.use { stream ->
+            val writer = stream.bufferedWriter(Charsets.UTF_8)
+            writer.append("--$boundary\r\n")
+            writer.append("Content-Disposition: form-data; name=\"file\"; filename=\"${evidenceFile.name}\"\r\n")
+            writer.append("Content-Type: $mimeType\r\n\r\n")
+            writer.flush()
+
+            evidenceFile.inputStream().use { input ->
+                input.copyTo(stream)
+            }
+
+            writer.append("\r\n--$boundary--\r\n")
+            writer.flush()
+        }
+
+        val responseCode = connection.responseCode
+        val bodyText = if (responseCode in 200..299) {
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } else {
+            connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+        }
+
+        if (responseCode !in 200..299) {
+            val detail = runCatching { JSONObject(bodyText).optString("detail") }.getOrNull()
+            throw IllegalStateException(detail?.takeIf { it.isNotBlank() } ?: "Evidence upload failed (HTTP $responseCode).")
+        }
+
+        JSONObject(bodyText)
+    } finally {
+        connection.disconnect()
+    }
+
+    val evidenceUrl = uploadResponse.optString("evidence_url")
+    if (evidenceUrl.isBlank()) {
+        throw IllegalStateException("Evidence upload did not return a valid URL.")
+    }
+
+    var deliveredCount = 0
+    recipientUsernames.forEach { username ->
+        runCatching {
+            sendDirectMessage(
+                apiBaseUrl = apiBaseUrl,
+                authToken = authToken,
+                recipientUsername = username,
+                messageText = "Emergency evidence: $evidenceUrl"
+            )
+        }.onSuccess {
+            deliveredCount += 1
+        }
+    }
+
+    return EvidenceDispatchResult(
+        evidenceUrl = evidenceUrl,
+        deliveredCount = deliveredCount
+    )
+}
+
 private fun buildShareLocationMessage(locationLabel: String, location: Location): String {
     val mapsLink = "https://maps.google.com/?q=${location.latitude},${location.longitude}"
     val label = locationLabel.takeIf { it.isNotBlank() } ?: "Current location"
@@ -3253,6 +3442,11 @@ private fun TrustedContactsSection(
             title = { Text(text = "Add Trusted Contact (App User)") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Enter an existing app username. You must be logged in to add contacts.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     OutlinedTextField(
                         value = contactIdentifier,
                         onValueChange = {
@@ -3292,8 +3486,7 @@ private fun TrustedContactsSection(
                                     TextButton(
                                         onClick = {
                                             onAddContact(candidate.username)
-                                            contactIdentifier = ""
-                                            showAddDialog = false
+                                            contactIdentifier = candidate.username
                                         },
                                         modifier = Modifier.height(UnifiedButtonHeight)
                                     ) {
@@ -3309,8 +3502,6 @@ private fun TrustedContactsSection(
                 Button(
                     onClick = {
                         onAddContact(contactIdentifier)
-                        contactIdentifier = ""
-                        showAddDialog = false
                     },
                     modifier = Modifier.height(UnifiedButtonHeight),
                     colors = ButtonDefaults.buttonColors(
