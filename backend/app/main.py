@@ -4,6 +4,7 @@ import csv
 import json
 import math
 import os
+import random
 import time
 import urllib.error
 import urllib.request
@@ -35,7 +36,6 @@ from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 from app.auth.db import DB_PATH, get_connection, init_auth_db
 from app.auth.routes import router as auth_router
-from sklearn.cluster import DBSCAN
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -95,6 +95,39 @@ HELPER_LEADERBOARD_STATS: dict[str, dict] = {}
 FCM_SERVER_KEY = os.getenv("FCM_SERVER_KEY", "").strip()
 RISK_LEVEL_MODERATE_FLOOR = 0.46
 RISK_LEVEL_HIGH_FLOOR = 0.63
+
+
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return default
+
+
+LOW_MEMORY_MODE = _read_bool_env("SMARTCOMMUNITY_LOW_MEMORY_MODE", False)
+MAX_INCIDENTS_IN_MEMORY = _read_int_env(
+    "SMARTCOMMUNITY_MAX_INCIDENTS",
+    30000 if LOW_MEMORY_MODE else 0,
+)
+ENABLE_DBSCAN = _read_bool_env(
+    "SMARTCOMMUNITY_ENABLE_DBSCAN",
+    not LOW_MEMORY_MODE,
+)
+MAX_HEATMAP_POINTS_RESPONSE = _read_int_env(
+    "SMARTCOMMUNITY_MAX_HEATMAP_POINTS",
+    20000 if LOW_MEMORY_MODE else 0,
+)
+INCIDENTS_SOURCE_COUNT = 0
 
 
 class UserHeartbeat(BaseModel):
@@ -326,9 +359,14 @@ def _build_helper_leaderboard() -> tuple[str | None, list[dict]]:
 @lru_cache(maxsize=1)
 def load_incidents() -> list[dict]:
     incidents: list[dict] = []
+    global INCIDENTS_SOURCE_COUNT
+    INCIDENTS_SOURCE_COUNT = 0
 
     if not DATASET_PATH.exists():
         return incidents
+
+    max_rows = MAX_INCIDENTS_IN_MEMORY if MAX_INCIDENTS_IN_MEMORY > 0 else None
+    reservoir_rng = random.Random(42)
 
     with DATASET_PATH.open("r", encoding="utf-8", newline="") as csv_file:
         reader = csv.DictReader(csv_file)
@@ -343,30 +381,42 @@ def load_incidents() -> list[dict]:
             severity_level = _to_float(row.get("severity_level"))
             point_weight = max(risk_score, severity_level / 5.0, 0.15)
 
-            incidents.append(
-                {
-                    "incident_id": row.get("incident_id"),
-                    "crime_type": row.get("crime_type", "unknown"),
-                    "city": row.get("city", "Unknown"),
-                    "area_name": row.get("area_name", "Unknown"),
-                    "date": row.get("date"),
-                    "time": row.get("time"),
-                    "hour_of_day": int(_to_float(row.get("hour_of_day"))),
-                    "day_of_week": row.get("day_of_week", "Unknown"),
-                    "is_weekend": int(_to_float(row.get("is_weekend"))),
-                    "is_night": int(_to_float(row.get("is_night"))),
-                    "crowd_density": normalize_crowd_density(row.get("crowd_density")),
-                    "lighting_condition": normalize_lighting(row.get("lighting_condition")),
-                    "latitude": latitude,
-                    "longitude": longitude,
-                    "risk_score": risk_score,
-                    "severity_level": severity_level,
-                    "crime_frequency_area": _to_float(row.get("crime_frequency_area")),
-                    "user_reports_count": int(_to_float(row.get("user_reports_count"))),
-                    "verified_reports": int(_to_float(row.get("verified_reports"))),
-                    "point_weight": round(point_weight, 4),
-                }
-            )
+            incident = {
+                "incident_id": row.get("incident_id"),
+                "crime_type": row.get("crime_type", "unknown"),
+                "city": row.get("city", "Unknown"),
+                "area_name": row.get("area_name", "Unknown"),
+                "date": row.get("date"),
+                "time": row.get("time"),
+                "hour_of_day": int(_to_float(row.get("hour_of_day"))),
+                "day_of_week": row.get("day_of_week", "Unknown"),
+                "is_weekend": int(_to_float(row.get("is_weekend"))),
+                "is_night": int(_to_float(row.get("is_night"))),
+                "crowd_density": normalize_crowd_density(row.get("crowd_density")),
+                "lighting_condition": normalize_lighting(row.get("lighting_condition")),
+                "latitude": latitude,
+                "longitude": longitude,
+                "risk_score": risk_score,
+                "severity_level": severity_level,
+                "crime_frequency_area": _to_float(row.get("crime_frequency_area")),
+                "user_reports_count": int(_to_float(row.get("user_reports_count"))),
+                "verified_reports": int(_to_float(row.get("verified_reports"))),
+                "point_weight": round(point_weight, 4),
+            }
+
+            INCIDENTS_SOURCE_COUNT += 1
+
+            if max_rows is None:
+                incidents.append(incident)
+                continue
+
+            if len(incidents) < max_rows:
+                incidents.append(incident)
+                continue
+
+            replacement_index = reservoir_rng.randint(0, INCIDENTS_SOURCE_COUNT - 1)
+            if replacement_index < max_rows:
+                incidents[replacement_index] = incident
 
     return incidents
 
@@ -388,7 +438,8 @@ def city_centroids() -> dict[str, tuple[float, float]]:
 
 @lru_cache(maxsize=1)
 def risk_feature_context() -> dict:
-    return build_spatial_feature_context(load_incidents(), grid_rows=140, grid_cols=140)
+    grid_size = 110 if LOW_MEMORY_MODE else 140
+    return build_spatial_feature_context(load_incidents(), grid_rows=grid_size, grid_cols=grid_size)
 
 
 def nearest_zone_prior(latitude: float, longitude: float, max_distance_km: float = 2.0) -> dict | None:
@@ -1010,10 +1061,15 @@ def helper_leaderboard(limit: int = Query(default=100, ge=1, le=500)) -> dict:
 @lru_cache(maxsize=1)
 def dataset_summary() -> dict:
     incidents = load_incidents()
+    source_incidents = INCIDENTS_SOURCE_COUNT or len(incidents)
     if not incidents:
         return {
             "dataset_file": DATASET_PATH.name,
             "total_incidents": 0,
+            "loaded_incidents": 0,
+            "source_incidents": 0,
+            "sampled": False,
+            "low_memory_mode": LOW_MEMORY_MODE,
             "average_risk_score": 0.0,
             "top_cities": [],
             "top_crime_types": [],
@@ -1034,6 +1090,10 @@ def dataset_summary() -> dict:
     return {
         "dataset_file": DATASET_PATH.name,
         "total_incidents": len(incidents),
+        "loaded_incidents": len(incidents),
+        "source_incidents": source_incidents,
+        "sampled": source_incidents > len(incidents),
+        "low_memory_mode": LOW_MEMORY_MODE,
         "average_risk_score": round(mean(risk_scores), 3),
         "top_cities": [
             {"city": city, "count": count}
@@ -1052,7 +1112,7 @@ def dataset_summary() -> dict:
     }
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=1)
 def heatmap_grid(rows: int = 120, cols: int = 120) -> dict:
     incidents = load_incidents()
     bounds = dataset_summary()["bounds"]
@@ -1109,7 +1169,72 @@ def heatmap_grid(rows: int = 120, cols: int = 120) -> dict:
     }
 
 
-@lru_cache(maxsize=8)
+def _grid_zones_fallback(bounds: dict, incidents_count: int, min_samples: int) -> dict:
+    grid = heatmap_grid(rows=120, cols=120)
+    points = grid.get("points", [])
+
+    if not points:
+        return {
+            "source_incidents": incidents_count,
+            "zones_count": 0,
+            "bounds": bounds,
+            "zones": [],
+            "source": "grid_fallback",
+        }
+
+    candidate_limit = 250 if LOW_MEMORY_MODE else 400
+    ranked = sorted(
+        points,
+        key=lambda point: (float(point[2]), int(point[3])),
+        reverse=True,
+    )[:candidate_limit]
+
+    weights = [float(point[2]) for point in ranked]
+    min_weight = min(weights)
+    max_weight = max(weights)
+    weight_span = max(1e-6, max_weight - min_weight)
+
+    zones: list[dict] = []
+    for index, point in enumerate(ranked):
+        latitude = float(point[0])
+        longitude = float(point[1])
+        avg_weight = float(point[2])
+        incident_count = int(point[3])
+
+        normalized_weight = (avg_weight - min_weight) / weight_span
+        sample_signal = min(1.0, incident_count / max(1, min_samples))
+        risk_score = (0.78 * normalized_weight) + (0.22 * sample_signal)
+
+        if risk_score >= 0.68:
+            risk_level = "high"
+        elif risk_score >= 0.42:
+            risk_level = "moderate"
+        else:
+            risk_level = "low"
+
+        zones.append(
+            {
+                "cluster_id": index,
+                "latitude": round(latitude, 6),
+                "longitude": round(longitude, 6),
+                "incident_count": incident_count,
+                "avg_weight": round(avg_weight, 4),
+                "risk_score": round(risk_score, 4),
+                "risk_level": risk_level,
+            }
+        )
+
+    zones.sort(key=lambda zone: zone["risk_score"], reverse=True)
+    return {
+        "source_incidents": incidents_count,
+        "zones_count": len(zones),
+        "bounds": bounds,
+        "zones": zones,
+        "source": "grid_fallback",
+    }
+
+
+@lru_cache(maxsize=1)
 def dbscan_zones(eps_meters: int = 850, min_samples: int = 16) -> dict:
     incidents = load_incidents()
     bounds = dataset_summary()["bounds"]
@@ -1121,6 +1246,14 @@ def dbscan_zones(eps_meters: int = 850, min_samples: int = 16) -> dict:
             "bounds": bounds,
             "zones": [],
         }
+
+    if not ENABLE_DBSCAN:
+        return _grid_zones_fallback(bounds=bounds, incidents_count=len(incidents), min_samples=min_samples)
+
+    try:
+        from sklearn.cluster import DBSCAN
+    except Exception:
+        return _grid_zones_fallback(bounds=bounds, incidents_count=len(incidents), min_samples=min_samples)
 
     coordinates_radians = [
         [math.radians(incident["latitude"]), math.radians(incident["longitude"])]
@@ -1198,6 +1331,7 @@ def dbscan_zones(eps_meters: int = 850, min_samples: int = 16) -> dict:
         "zones_count": len(zones),
         "bounds": bounds,
         "zones": zones,
+        "source": "dbscan",
     }
 
 
@@ -1261,7 +1395,10 @@ def heatmap_summary() -> dict:
 
 
 @app.get("/api/heatmap/points")
-def heatmap_points(city: str | None = Query(default=None)) -> dict:
+def heatmap_points(
+    city: str | None = Query(default=None),
+    limit: int = Query(default=0, ge=0, le=100000),
+) -> dict:
     incidents = load_incidents()
 
     if city:
@@ -1281,9 +1418,21 @@ def heatmap_points(city: str | None = Query(default=None)) -> dict:
         for incident in filtered
     ]
 
+    effective_limit = limit
+    if effective_limit <= 0 and MAX_HEATMAP_POINTS_RESPONSE > 0:
+        effective_limit = MAX_HEATMAP_POINTS_RESPONSE
+
+    sampled = False
+    if effective_limit > 0 and len(points) > effective_limit:
+        sampled = True
+        stride = max(1, math.ceil(len(points) / effective_limit))
+        points = points[::stride][:effective_limit]
+
     return {
         "count": len(points),
         "city_filter": city,
+        "sampled": sampled,
+        "limit": effective_limit if effective_limit > 0 else None,
         "points": points,
     }
 

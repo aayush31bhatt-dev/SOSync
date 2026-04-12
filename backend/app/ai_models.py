@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,8 @@ import joblib
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODELS_DIR = PROJECT_ROOT / "backend" / "models"
+LOW_MEMORY_MODE = os.getenv("SMARTCOMMUNITY_LOW_MEMORY_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_MODEL_FILES = os.getenv("SMARTCOMMUNITY_ENABLE_MODEL_FILES", "false" if LOW_MEMORY_MODE else "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def normalize_crowd_density(value: str | None) -> str:
@@ -54,6 +57,9 @@ def _load_model_bundle_cached(model_name: str, modified_time_ns: int) -> dict[st
 
 
 def _load_model_bundle(model_name: str) -> dict[str, Any] | None:
+    if not ENABLE_MODEL_FILES:
+        return None
+
     model_path = MODELS_DIR / model_name
     if not model_path.exists():
         return None
