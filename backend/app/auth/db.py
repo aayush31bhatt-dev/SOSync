@@ -59,6 +59,7 @@ def _path_writable(path: Path) -> bool:
 
 RENDER_RUNTIME = _is_render_runtime()
 STRICT_DB_PATH = _read_bool_env("SMARTCOMMUNITY_STRICT_DB_PATH", False)
+AUTH_DB_STRICT_BACKEND = _read_bool_env("AUTH_DB_STRICT_BACKEND", False)
 
 
 def _resolve_sqlite_db_path() -> tuple[Path, str]:
@@ -103,7 +104,47 @@ def _resolve_sqlite_db_path() -> tuple[Path, str]:
 
 SQLITE_DB_PATH, SQLITE_DB_PATH_SOURCE = _resolve_sqlite_db_path()
 
-DB_BACKEND = AUTH_DB_BACKEND
+_MONGO_CLIENT = None
+REQUESTED_DB_BACKEND = AUTH_DB_BACKEND if AUTH_DB_BACKEND else "sqlite"
+DB_BACKEND_FALLBACK_REASON: str | None = None
+
+
+def _probe_mongodb_client() -> tuple[bool, str | None]:
+    global _MONGO_CLIENT
+
+    if MongoClient is None:
+        return False, "pymongo import failed; using SQLite fallback"
+    if not MONGODB_URI:
+        return False, "MONGODB_URI is not set; using SQLite fallback"
+
+    try:
+        _MONGO_CLIENT = MongoClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=10000,
+            connectTimeoutMS=10000,
+        )
+        _MONGO_CLIENT.admin.command("ping")
+        return True, None
+    except Exception as exc:
+        _MONGO_CLIENT = None
+        return False, f"MongoDB ping failed ({exc.__class__.__name__}); using SQLite fallback"
+
+
+if REQUESTED_DB_BACKEND not in {"sqlite", "mongodb"}:
+    DB_BACKEND = "sqlite"
+    DB_BACKEND_FALLBACK_REASON = (
+        f"Unsupported AUTH_DB_BACKEND='{REQUESTED_DB_BACKEND}'; using SQLite fallback"
+    )
+elif REQUESTED_DB_BACKEND == "mongodb" and not AUTH_DB_STRICT_BACKEND:
+    can_use_mongo, fallback_reason = _probe_mongodb_client()
+    if can_use_mongo:
+        DB_BACKEND = "mongodb"
+    else:
+        DB_BACKEND = "sqlite"
+        DB_BACKEND_FALLBACK_REASON = fallback_reason
+else:
+    DB_BACKEND = REQUESTED_DB_BACKEND
+
 if DB_BACKEND == "mongodb":
     if MONGODB_URI:
         DB_PATH = f"{MONGODB_URI}/{MONGODB_DB_NAME}"
@@ -113,7 +154,10 @@ if DB_BACKEND == "mongodb":
     DB_PATH_IS_PERSISTENT = True
 else:
     DB_PATH = SQLITE_DB_PATH
-    DB_PATH_SOURCE = SQLITE_DB_PATH_SOURCE
+    if REQUESTED_DB_BACKEND == "mongodb":
+        DB_PATH_SOURCE = f"sqlite_fallback:{SQLITE_DB_PATH_SOURCE}"
+    else:
+        DB_PATH_SOURCE = SQLITE_DB_PATH_SOURCE
     DB_PATH_IS_PERSISTENT = _is_render_persistent_path(SQLITE_DB_PATH)
 
 
@@ -149,9 +193,6 @@ class _SQLiteConnection:
         else:
             self._connection.rollback()
         self._connection.close()
-
-
-_MONGO_CLIENT = None
 
 
 def _mongo_client():

@@ -43,10 +43,12 @@ The backend now supports MongoDB for auth, messages, and live-location tables.
 4. Ensure these backend env vars are set:
 	- `AUTH_DB_BACKEND=mongodb`
 	- `MONGODB_DB_NAME=sosync`
+	- Optional: `AUTH_DB_STRICT_BACKEND=true` if you want deploy to fail when MongoDB is unavailable.
 5. Redeploy on Render.
 
 Use `/api/auth-db-health` to verify:
 - `db_backend` should be `mongodb`.
+- If Mongo is unavailable and strict mode is off, backend falls back to SQLite and reports `db_backend_fallback_reason`.
 
 ### 2. Configure App API URL
 

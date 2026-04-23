@@ -9,6 +9,8 @@ services:
     envVars:
       - key: AUTH_DB_BACKEND
         value: mongodb
+      - key: AUTH_DB_STRICT_BACKEND
+        value: "false"
       - key: MONGODB_DB_NAME
         value: sosync
       - key: PYTHON_VERSION
