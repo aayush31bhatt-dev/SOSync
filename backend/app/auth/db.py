@@ -2,10 +2,32 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DB_PATH = PROJECT_ROOT / "backend" / "app" / "smartcommunity.db"
+RENDER_PERSISTENT_DB_PATH = Path("/var/data/smartcommunity.db")
+TEMP_DB_PATH = Path(tempfile.gettempdir()) / "smartcommunity.db"
+
+
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_render_runtime() -> bool:
+    return (
+        os.getenv("RENDER", "").strip().lower() == "true"
+        or bool(os.getenv("RENDER_SERVICE_ID", "").strip())
+    )
+
+
+def _is_render_persistent_path(path: Path) -> bool:
+    normalized = str(path).replace("\\", "/")
+    return normalized.startswith("/var/data/")
 
 
 def _path_writable(path: Path) -> bool:
@@ -19,31 +41,52 @@ def _path_writable(path: Path) -> bool:
         return False
 
 
-def _resolve_db_path() -> Path:
+RENDER_RUNTIME = _is_render_runtime()
+STRICT_DB_PATH = _read_bool_env("SMARTCOMMUNITY_STRICT_DB_PATH", RENDER_RUNTIME)
+
+
+def _resolve_db_path() -> tuple[Path, str]:
     configured = os.getenv("SMARTCOMMUNITY_DB_PATH", "").strip()
-    candidates: list[Path] = []
+    configured_path = Path(configured).expanduser() if configured else None
 
-    if configured:
-        candidates.append(Path(configured).expanduser())
+    if configured_path is not None:
+        if _path_writable(configured_path):
+            if RENDER_RUNTIME and STRICT_DB_PATH and not _is_render_persistent_path(configured_path):
+                raise RuntimeError(
+                    "SMARTCOMMUNITY_DB_PATH must point under /var/data on Render to avoid data loss. "
+                    f"Current resolved path: {configured_path}"
+                )
+            return configured_path, "configured"
 
-    # Prefer Render persistent disk path when available.
-    candidates.append(Path("/var/data/smartcommunity.db"))
-    candidates.append(DEFAULT_DB_PATH)
-    candidates.append(Path("/tmp/smartcommunity.db"))
+        if STRICT_DB_PATH:
+            raise RuntimeError(
+                "Configured SMARTCOMMUNITY_DB_PATH is not writable. "
+                f"Current value: {configured_path}"
+            )
 
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
+    if RENDER_RUNTIME:
+        if _path_writable(RENDER_PERSISTENT_DB_PATH):
+            return RENDER_PERSISTENT_DB_PATH, "render_default"
+
+        if STRICT_DB_PATH:
+            raise RuntimeError(
+                "Render persistent DB path is not writable. Ensure persistent disk is mounted at /var/data."
+            )
+
+    fallback_candidates: list[tuple[str, Path]] = [
+        ("repo_default", DEFAULT_DB_PATH),
+        ("temp_fallback", TEMP_DB_PATH),
+    ]
+
+    for source, candidate in fallback_candidates:
         if _path_writable(candidate):
-            return candidate
+            return candidate, source
 
-    return DEFAULT_DB_PATH
+    raise RuntimeError("No writable path found for SQLite database.")
 
 
-DB_PATH = _resolve_db_path()
+DB_PATH, DB_PATH_SOURCE = _resolve_db_path()
+DB_PATH_IS_PERSISTENT = _is_render_persistent_path(DB_PATH)
 
 
 def get_connection() -> sqlite3.Connection:

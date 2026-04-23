@@ -34,7 +34,15 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
-from app.auth.db import DB_PATH, get_connection, init_auth_db
+from app.auth.db import (
+    DB_PATH,
+    DB_PATH_IS_PERSISTENT,
+    DB_PATH_SOURCE,
+    RENDER_RUNTIME,
+    STRICT_DB_PATH,
+    get_connection,
+    init_auth_db,
+)
 from app.auth.routes import router as auth_router
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -1378,6 +1386,10 @@ def auth_db_health() -> dict:
         return {
             "status": "ok",
             "db_path": str(DB_PATH),
+            "db_path_source": DB_PATH_SOURCE,
+            "db_path_persistent": DB_PATH_IS_PERSISTENT,
+            "strict_db_path": STRICT_DB_PATH,
+            "render_runtime": RENDER_RUNTIME,
             "users_count": users_count,
             "direct_messages_count": messages_count,
             "active_live_location_shares": active_location_shares,
