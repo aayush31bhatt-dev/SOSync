@@ -42,7 +42,7 @@ def _path_writable(path: Path) -> bool:
 
 
 RENDER_RUNTIME = _is_render_runtime()
-STRICT_DB_PATH = _read_bool_env("SMARTCOMMUNITY_STRICT_DB_PATH", RENDER_RUNTIME)
+STRICT_DB_PATH = _read_bool_env("SMARTCOMMUNITY_STRICT_DB_PATH", False)
 
 
 def _resolve_db_path() -> tuple[Path, str]:
