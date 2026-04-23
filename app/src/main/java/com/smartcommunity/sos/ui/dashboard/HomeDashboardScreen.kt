@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -107,6 +108,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -345,7 +347,17 @@ fun HomeDashboardScreen(currentUsername: String) {
     fun sendEvidenceToTrustedContactsInApp(evidenceFile: File, mimeType: String) {
         val token = authSessionStore.getToken()
         if (token.isNullOrBlank()) {
-            sosStatus = "Session expired. Login again to send evidence to trusted contacts."
+            val fallbackSent = shareEvidenceViaDeviceApps(
+                context = context,
+                trustedContacts = trustedContacts,
+                evidenceFile = evidenceFile,
+                mimeType = mimeType
+            )
+            sosStatus = if (fallbackSent) {
+                "Session expired for in-app send. Shared evidence using installed messaging apps."
+            } else {
+                "Session expired. Login again to send evidence in-app."
+            }
             return
         }
 
@@ -380,10 +392,19 @@ fun HomeDashboardScreen(currentUsername: String) {
                 }
             } else {
                 val failure = result.exceptionOrNull()?.message.orEmpty()
+                val fallbackSent = shareEvidenceViaDeviceApps(
+                    context = context,
+                    trustedContacts = trustedContacts,
+                    evidenceFile = evidenceFile,
+                    mimeType = mimeType
+                )
+
                 sosStatus = when {
+                    fallbackSent -> "In-app send failed, so evidence was shared via device messaging apps."
                     failure.contains("401") -> "Session expired. Login again to send evidence."
-                    failure.contains("404") -> "One or more trusted contacts were not found. Re-link usernames and retry."
+                    failure.contains("404") -> "Trusted contacts are not fully linked to app usernames yet."
                     failure.contains("413") -> "Evidence file is too large to upload."
+                    failure.contains("405") || failure.contains("Not Found", ignoreCase = true) -> "Backend evidence route is not live yet."
                     failure.isNotBlank() -> failure
                     else -> "Could not send evidence to trusted contacts."
                 }
@@ -2713,6 +2734,50 @@ private fun copyContentUriToEvidenceFile(
         }
         outputFile.takeIf { it.exists() && it.length() > 0L }
     }.getOrNull()
+}
+
+private fun shareEvidenceViaDeviceApps(
+    context: Context,
+    trustedContacts: List<TrustedContact>,
+    evidenceFile: File,
+    mimeType: String
+): Boolean {
+    val recipients = trustedContacts
+        .map { sanitizePhoneNumber(it.phoneNumber) }
+        .filter { it.isNotBlank() }
+        .distinct()
+    if (recipients.isEmpty()) {
+        return false
+    }
+
+    val evidenceUri = runCatching {
+        FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            evidenceFile
+        )
+    }.getOrNull() ?: return false
+
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = mimeType
+        putExtra(Intent.EXTRA_STREAM, evidenceUri)
+        putExtra("address", recipients.joinToString(separator = ";"))
+        putExtra("sms_body", "Emergency evidence from SOSync")
+        clipData = ClipData.newUri(context.contentResolver, "evidence", evidenceUri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+
+    return runCatching {
+        if (shareIntent.resolveActivity(context.packageManager) != null) {
+            val chooser = Intent.createChooser(shareIntent, "Share evidence").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(chooser)
+            true
+        } else {
+            false
+        }
+    }.getOrDefault(false)
 }
 
 private fun uploadEvidenceAndNotifyTrustedContacts(

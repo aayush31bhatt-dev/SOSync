@@ -35,6 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 from app.auth.db import (
+    DB_BACKEND,
     DB_PATH,
     DB_PATH_IS_PERSISTENT,
     DB_PATH_SOURCE,
@@ -1385,6 +1386,7 @@ def auth_db_health() -> dict:
 
         return {
             "status": "ok",
+            "db_backend": DB_BACKEND,
             "db_path": str(DB_PATH),
             "db_path_source": DB_PATH_SOURCE,
             "db_path_persistent": DB_PATH_IS_PERSISTENT,

@@ -32,6 +32,22 @@ You can deploy to Render using `backend/render.yaml`.
 3. Render will detect `backend/render.yaml` and create the `sosync-api` web service.
 4. After deploy, note your public API URL (example: `https://sosync-api.onrender.com`).
 
+### MongoDB (Recommended For Persistent Auth Data)
+
+The backend now supports MongoDB for auth, messages, and live-location tables.
+
+1. Create a MongoDB Atlas cluster (free tier is enough for demos).
+2. In Atlas, create a database user and allow your Render outbound IP range (or `0.0.0.0/0` for quick setup).
+3. Copy your Mongo connection string and set Render env var:
+	- `MONGODB_URI=mongodb+srv://<user>:<pass>@<cluster>/`
+4. Ensure these backend env vars are set:
+	- `AUTH_DB_BACKEND=mongodb`
+	- `MONGODB_DB_NAME=sosync`
+5. Redeploy on Render.
+
+Use `/api/auth-db-health` to verify:
+- `db_backend` should be `mongodb`.
+
 ### 2. Configure App API URL
 
 The Android app now supports a configurable base URL through Gradle property `apiBaseUrl`.

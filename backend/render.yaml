@@ -7,12 +7,14 @@ services:
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /
     envVars:
+      - key: AUTH_DB_BACKEND
+        value: mongodb
+      - key: MONGODB_DB_NAME
+        value: sosync
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: ALLOWED_ORIGINS
         value: "*"
-      - key: SMARTCOMMUNITY_DB_PATH
-        value: /var/data/smartcommunity.db
       - key: SMARTCOMMUNITY_STRICT_DB_PATH
         value: "false"
       - key: AUTH_DEBUG_RESET_LINKS
